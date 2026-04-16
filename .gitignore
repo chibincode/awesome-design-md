@@ -1,0 +1,10 @@
+.DS_Store
+.playwright-cli/
+design-md/.DS_Store
+design-studio/node_modules/
+design-studio/dist/
+design-studio/coverage/
+design-studio/.vite/
+design-studio/*.tsbuildinfo
+design-studio/vite.config.js
+design-studio/vite.config.d.ts
