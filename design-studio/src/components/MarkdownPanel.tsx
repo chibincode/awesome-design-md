@@ -4,18 +4,20 @@ interface MarkdownPanelProps {
   spec: DesignSpec;
   markdown: string;
   warnings: string[];
+  dirty: boolean;
+  onSave: () => void;
 }
 
-export function MarkdownPanel({ spec, markdown, warnings }: MarkdownPanelProps) {
+export function MarkdownPanel({ spec, markdown, warnings, dirty, onSave }: MarkdownPanelProps) {
   return (
-    <aside className="design-panel">
-      <div className="design-panel__header">
+    <details className="design-panel export-panel">
+      <summary className="design-panel__header">
         <div>
-          <p className="eyebrow">Generated output</p>
-          <h2>Normalized DESIGN.md</h2>
+          <p className="eyebrow">Optional</p>
+          <h2>Export DESIGN.md</h2>
         </div>
-        <span className="pill">{spec.theme.themeMode}</span>
-      </div>
+        <span className="pill">Expand</span>
+      </summary>
 
       <div className="summary-grid">
         <div className="summary-card">
@@ -36,6 +38,12 @@ export function MarkdownPanel({ spec, markdown, warnings }: MarkdownPanelProps) 
         </div>
       </div>
 
+      <div className="export-panel__actions">
+        <button type="button" className="button--primary" onClick={onSave}>
+          {dirty ? "Save DESIGN.md" : "Save again"}
+        </button>
+      </div>
+
       {warnings.length > 0 ? (
         <div className="warning-panel">
           <strong>Import warnings</strong>
@@ -50,6 +58,6 @@ export function MarkdownPanel({ spec, markdown, warnings }: MarkdownPanelProps) 
       <div className="markdown-card">
         <pre>{markdown}</pre>
       </div>
-    </aside>
+    </details>
   );
 }

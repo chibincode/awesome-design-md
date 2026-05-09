@@ -6,7 +6,7 @@ import {
   SCALE_PRESET_LABELS,
   TYPOGRAPHY_SCALE
 } from "./presets";
-import { contrastText, luminance, parseColor, saturation, toHex } from "./color";
+import { contrastText, darken, lighten, luminance, mix, parseColor, saturation, toHex } from "./color";
 import type {
   DesignSpec,
   DensityPreset,
@@ -26,14 +26,26 @@ const SECTION_TITLES: Array<{ id: SectionId; title: string }> = [
   { id: "components", title: "Component Stylings" },
   { id: "layout", title: "Layout Principles" },
   { id: "elevation", title: "Depth & Elevation" },
+  { id: "shapes", title: "Shapes" },
   { id: "dosDonts", title: "Do's and Don'ts" },
   { id: "responsive", title: "Responsive Behavior" },
   { id: "agentPrompts", title: "Agent Prompt Guide" }
 ];
 
-const SECTION_LOOKUP = new Map(
-  SECTION_TITLES.map((section) => [section.title.toLowerCase(), section.id])
-);
+const SECTION_ALIASES: Array<{ id: SectionId; titles: string[] }> = [
+  { id: "theme", titles: ["Overview", "Brand & Style", "Visual Theme & Atmosphere"] },
+  { id: "colors", titles: ["Colors", "Color Palette & Roles"] },
+  { id: "typography", titles: ["Typography", "Typography Rules"] },
+  { id: "layout", titles: ["Layout", "Layout & Spacing", "Layout Principles"] },
+  { id: "elevation", titles: ["Elevation & Depth", "Elevation", "Depth & Elevation"] },
+  { id: "shapes", titles: ["Shapes"] },
+  { id: "components", titles: ["Components", "Component Stylings"] },
+  { id: "dosDonts", titles: ["Do's and Don'ts", "Dos and Donts"] },
+  { id: "responsive", titles: ["Responsive Behavior", "Responsive"] },
+  { id: "agentPrompts", titles: ["Agent Prompt Guide"] }
+];
+
+const SECTION_LOOKUP = new Map(SECTION_ALIASES.flatMap((section) => section.titles.map((title) => [title.toLowerCase(), section.id])));
 
 const DEFAULT_SPEC: DesignSpec = {
   meta: {
@@ -94,8 +106,126 @@ interface ExtractedSections {
   misc: string[];
 }
 
+interface ParsedFrontmatter {
+  name?: string;
+  colors: Record<string, string>;
+  typography: Record<
+    string,
+    Partial<{
+      fontFamily: string;
+      fontSize: string;
+      fontWeight: string;
+      lineHeight: string;
+      letterSpacing: string;
+    }>
+  >;
+  rounded: Record<string, string>;
+  spacing: Record<string, string>;
+}
+
 function normalizeMarkdown(markdown: string) {
   return markdown.replace(/\r\n/g, "\n").trim();
+}
+
+function getYamlFrontmatter(markdown: string) {
+  if (!markdown.startsWith("---\n")) return "";
+  const end = markdown.indexOf("\n---", 4);
+  if (end === -1) return "";
+  return markdown.slice(4, end).trim();
+}
+
+function stripYamlFrontmatter(markdown: string) {
+  if (!markdown.startsWith("---\n")) return markdown;
+  const end = markdown.indexOf("\n---", 4);
+  if (end === -1) return markdown;
+  return markdown.slice(end + 4).trim();
+}
+
+function cleanYamlScalar(value: string) {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function topLevelYamlValue(frontmatter: string, key: string) {
+  const match = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+  return match ? cleanYamlScalar(match[1]) : undefined;
+}
+
+function parseFlatYamlMap(frontmatter: string, sectionName: string) {
+  const result: Record<string, string> = {};
+  let active = false;
+
+  for (const line of frontmatter.split("\n")) {
+    const topLevel = line.match(/^([a-zA-Z0-9_-]+):\s*$/);
+    if (topLevel) {
+      active = topLevel[1] === sectionName;
+      continue;
+    }
+
+    if (!active) continue;
+    if (/^\S/.test(line)) break;
+
+    const entry = line.match(/^\s{2}([a-zA-Z0-9_-]+|DEFAULT):\s*(.+)$/);
+    if (entry) {
+      result[entry[1]] = cleanYamlScalar(entry[2]);
+    }
+  }
+
+  return result;
+}
+
+function parseTypographyYaml(frontmatter: string): ParsedFrontmatter["typography"] {
+  const typography: ParsedFrontmatter["typography"] = {};
+  let active = false;
+  let currentRole = "";
+
+  for (const line of frontmatter.split("\n")) {
+    const topLevel = line.match(/^([a-zA-Z0-9_-]+):\s*$/);
+    if (topLevel) {
+      active = topLevel[1] === "typography";
+      currentRole = "";
+      continue;
+    }
+
+    if (!active) continue;
+    if (/^\S/.test(line)) break;
+
+    const role = line.match(/^\s{2}([a-zA-Z0-9_-]+):\s*$/);
+    if (role) {
+      currentRole = role[1];
+      typography[currentRole] = {};
+      continue;
+    }
+
+    const property = line.match(/^\s{4}([a-zA-Z0-9_-]+):\s*(.+)$/);
+    if (currentRole && property) {
+      typography[currentRole][property[1] as keyof ParsedFrontmatter["typography"][string]] = cleanYamlScalar(property[2]);
+    }
+  }
+
+  return typography;
+}
+
+function parseFrontmatter(markdown: string): ParsedFrontmatter {
+  const frontmatter = getYamlFrontmatter(markdown);
+  return {
+    name: frontmatter ? topLevelYamlValue(frontmatter, "name") : undefined,
+    colors: frontmatter ? parseFlatYamlMap(frontmatter, "colors") : {},
+    typography: frontmatter ? parseTypographyYaml(frontmatter) : {},
+    rounded: frontmatter ? parseFlatYamlMap(frontmatter, "rounded") : {},
+    spacing: frontmatter ? parseFlatYamlMap(frontmatter, "spacing") : {}
+  };
+}
+
+function yamlString(value: string) {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function yamlToken(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function humanize(value: string) {
@@ -124,7 +254,7 @@ function stripImportedNotes(sectionBody: string) {
 }
 
 function extractSections(markdown: string): ExtractedSections {
-  const sections = Array.from(markdown.matchAll(/^##\s+\d+\.\s+(.+)$/gm));
+  const sections = Array.from(markdown.matchAll(/^##\s+(?:\d+\.\s+)?(.+)$/gm));
   const mapped: Partial<Record<SectionId, string>> = {};
   const misc: string[] = [];
 
@@ -134,7 +264,7 @@ function extractSections(markdown: string): ExtractedSections {
     const end = index + 1 < sections.length ? sections[index + 1].index! : markdown.length;
     const body = markdown.slice(start, end).trim();
     const id = SECTION_LOOKUP.get(heading.toLowerCase());
-    if (id) {
+    if (id && !mapped[id]) {
       mapped[id] = body;
     } else {
       misc.push(`## ${heading}\n\n${body}`);
@@ -303,34 +433,52 @@ function uniquePalette(palette: PaletteReference[]) {
   });
 }
 
+function paletteFromFrontmatterColors(colors: Record<string, string>): PaletteReference[] {
+  return Object.entries(colors)
+    .filter(([, value]) => parseColor(value))
+    .map(([name, value]) => ({
+      name: humanize(name),
+      value: toHex(value),
+      role: humanize(name),
+      description: `${humanize(name)} token from Stitch frontmatter.`
+    }));
+}
+
+function frontmatterColor(colors: Record<string, string>, keys: string[], fallback: string) {
+  const value = keys.map((key) => colors[key]).find(Boolean);
+  return value ? toHex(value) : fallback;
+}
+
+function frontmatterFont(typography: ParsedFrontmatter["typography"], roles: string[]) {
+  for (const role of roles) {
+    const fontFamily = typography[role]?.fontFamily;
+    if (fontFamily) return fontFamily;
+  }
+  return "";
+}
+
+function tokenLengthToPx(value?: string) {
+  if (!value) return null;
+  const px = value.match(/^(-?\d+(?:\.\d+)?)px$/i);
+  if (px) return Number.parseFloat(px[1]);
+  const rem = value.match(/^(-?\d+(?:\.\d+)?)rem$/i);
+  if (rem) return Number.parseFloat(rem[1]) * 16;
+  return null;
+}
+
+function radiusFromToken(value?: string) {
+  const px = tokenLengthToPx(value);
+  return px === null ? null : radiusFromValues([px]);
+}
+
 function deriveDescription(title: string, themeSection: string) {
   const paragraph = firstParagraph(themeSection);
   if (paragraph) return paragraph;
   return `${title} focuses on strong component clarity, expressive hierarchy, and reusable design tokens.`;
 }
 
-function importedNoteBlock(content?: string) {
-  if (!content) return "";
-  return `\n### Imported Notes\n\n${content.trim()}\n`;
-}
-
-function buildTypographyTable(spec: DesignSpec) {
-  const rows = TYPOGRAPHY_SCALE[spec.typography.scalePreset]
-    .map(
-      (row) =>
-        `| ${row.role} | ${row.role.includes("Body") || row.role === "Caption" ? spec.typography.bodyFont : spec.typography.displayFont} | ${row.size} | ${row.weight} | ${row.lineHeight} | ${row.letterSpacing} |`
-    )
-    .join("\n");
-
-  return [
-    "| Role | Font | Size | Weight | Line Height | Letter Spacing |",
-    "|------|------|------|--------|-------------|----------------|",
-    rows
-  ].join("\n");
-}
-
 function generatedThemeParagraph(spec: DesignSpec) {
-  const accentText = contrastText(spec.colors.accent);
+  const accentText = luminance(spec.colors.accent) > 0.18 ? "#10151d" : "#ffffff";
   const themeFlavor =
     spec.theme.themeMode === "dark"
       ? "dark-led system"
@@ -341,52 +489,135 @@ function generatedThemeParagraph(spec: DesignSpec) {
   return `${spec.meta.title} is a ${themeFlavor} built around ${spec.theme.atmosphere.toLowerCase()}. The core canvas starts from \`${spec.colors.base}\`, surfaces land on \`${spec.colors.surface}\`, and the main accent \`${spec.colors.accent}\` is calibrated for strong interaction contrast with ${accentText === "#10151d" ? "dark" : "light"} foreground pairings.`;
 }
 
-function generatedComponentCopy(spec: DesignSpec) {
+function paletteToken(spec: DesignSpec, keywords: string[], fallback: string) {
+  const entry = spec.colors.palette.find((item) => {
+    const haystack = `${item.name} ${item.role} ${item.description}`.toLowerCase();
+    return keywords.some((keyword) => haystack.includes(keyword));
+  });
+  return entry ? toHex(entry.value) : fallback;
+}
+
+function generatedFrontmatter(spec: DesignSpec) {
   const radius = RADIUS_VALUES[spec.shape.radius];
   const formRadius = FORM_RADIUS_VALUES[spec.shape.formRadius];
-  return [
-    `- **Buttons**: Primary actions use \`${spec.colors.accent}\` on high-contrast text with a shared radius of \`${radius}\`. Secondary buttons rely on \`${spec.colors.surface}\` and \`${spec.colors.border}\` for definition.`,
-    `- **Inputs & Selectors**: Form controls use \`${formRadius}\` radius, \`${spec.colors.surface}\` fill, and \`${spec.colors.border}\` borders. Focus states should reinforce the accent color rather than introduce a second hue.`,
-    `- **Cards & Panels**: Surfaces stack from page to card using subtle tone separation and the \`${spec.elevation.preset}\` elevation preset.`,
-    `- **Navigation & Tabs**: Segmented controls, tab bars, and top-level navigation should feel structurally aligned with the current density preset: ${spec.layout.density}.`
-  ].join("\n");
-}
+  const [displayType, sectionType, cardType, bodyType, captionType] = TYPOGRAPHY_SCALE[spec.typography.scalePreset];
+  const base = toHex(spec.colors.base);
+  const surface = toHex(spec.colors.surface);
+  const accent = toHex(spec.colors.accent);
+  const textPrimary = toHex(spec.colors.textPrimary);
+  const textSecondary = toHex(spec.colors.textSecondary);
+  const border = toHex(spec.colors.border);
+  const isDark = spec.theme.themeMode === "dark" || luminance(base) < 0.35;
+  const secondary = paletteToken(spec, ["secondary", "purple", "violet"], mix(accent, textPrimary, 0.28));
+  const tertiary = paletteToken(spec, ["tertiary", "neutral", "silver", "gray"], mix(textSecondary, surface, 0.18));
+  const error = "#ffb4ab";
+  const onAccent = contrastText(accent, "#10151d", "#ffffff");
 
-function generatedDoDont(spec: DesignSpec) {
   return [
-    "### Do",
-    `- Keep interaction accents anchored to \`${spec.colors.accent}\` and avoid introducing unrelated highlight colors.`,
-    `- Maintain a consistent radius system using \`${RADIUS_VALUES[spec.shape.radius]}\` for general components and \`${FORM_RADIUS_VALUES[spec.shape.formRadius]}\` for form controls.`,
-    `- Preserve the ${SCALE_PRESET_LABELS[spec.typography.scalePreset].toLowerCase()} typography rhythm across screens.`,
-    "",
-    "### Don't",
-    "- Mix multiple surface languages or competing shadow systems in the same screen.",
-    "- Let utility copy become louder than the display hierarchy.",
-    "- Break density rules by packing some screens tightly and letting others drift without intention."
-  ].join("\n");
-}
-
-function generatedResponsive(spec: DesignSpec) {
-  return [
-    "| Breakpoint | Behavior |",
-    "|------------|----------|",
-    `| Mobile | Collapse multi-column cards into a single stack, preserve primary actions, and keep vertical rhythm ${spec.layout.density}. |`,
-    "| Tablet | Allow two-column compositions where content pairs naturally with media or settings panels. |",
-    "| Desktop | Use full canvas width, keep the component rhythm consistent, and preserve generous breathing room around hero or showcase cards. |"
-  ].join("\n");
-}
-
-function generatedPromptGuide(spec: DesignSpec) {
-  return [
-    "### Quick Tokens",
-    `- Accent: \`${spec.colors.accent}\``,
-    `- Base / Page: \`${spec.colors.base}\``,
-    `- Surface: \`${spec.colors.surface}\``,
-    `- Text Primary: \`${spec.colors.textPrimary}\``,
-    `- Border: \`${spec.colors.border}\``,
-    "",
-    "### Example Prompt",
-    `- "Create a ${spec.theme.themeMode} product workspace using ${spec.typography.displayFont} for display moments, ${spec.typography.bodyFont} for UI copy, ${spec.colors.accent} for primary actions, and a ${spec.elevation.preset} elevation system."`
+    "---",
+    `name: ${yamlToken(spec.meta.title)}`,
+    "colors:",
+    `  surface: ${yamlToken(base)}`,
+    `  surface-dim: ${yamlToken(isDark ? darken(base, 0.05) : darken(base, 0.08))}`,
+    `  surface-bright: ${yamlToken(isDark ? lighten(base, 0.16) : lighten(base, 0.08))}`,
+    `  surface-container-lowest: ${yamlToken(isDark ? darken(base, 0.1) : lighten(surface, 0.2))}`,
+    `  surface-container-low: ${yamlToken(isDark ? lighten(base, 0.04) : darken(surface, 0.02))}`,
+    `  surface-container: ${yamlToken(surface)}`,
+    `  surface-container-high: ${yamlToken(isDark ? lighten(surface, 0.07) : darken(surface, 0.04))}`,
+    `  surface-container-highest: ${yamlToken(isDark ? lighten(surface, 0.12) : darken(surface, 0.07))}`,
+    `  on-surface: ${yamlToken(textPrimary)}`,
+    `  on-surface-variant: ${yamlToken(textSecondary)}`,
+    `  inverse-surface: ${yamlToken(isDark ? textPrimary : "#303030")}`,
+    `  inverse-on-surface: ${yamlToken(isDark ? "#303030" : "#f8fbff")}`,
+    `  outline: ${yamlToken(border)}`,
+    `  outline-variant: ${yamlToken(isDark ? darken(border, 0.22) : lighten(border, 0.22))}`,
+    `  surface-tint: ${yamlToken(accent)}`,
+    `  primary: ${yamlToken(accent)}`,
+    `  on-primary: ${yamlToken(onAccent)}`,
+    `  primary-container: ${yamlToken(mix(accent, surface, isDark ? 0.18 : 0.28))}`,
+    `  on-primary-container: ${yamlToken(contrastText(mix(accent, surface, isDark ? 0.18 : 0.28), "#10151d", "#ffffff"))}`,
+    `  inverse-primary: ${yamlToken(darken(accent, 0.22))}`,
+    `  secondary: ${yamlToken(secondary)}`,
+    `  on-secondary: ${yamlToken(contrastText(secondary, "#10151d", "#ffffff"))}`,
+    `  secondary-container: ${yamlToken(mix(secondary, surface, 0.22))}`,
+    `  on-secondary-container: ${yamlToken(contrastText(mix(secondary, surface, 0.22), "#10151d", "#ffffff"))}`,
+    `  tertiary: ${yamlToken(tertiary)}`,
+    `  on-tertiary: ${yamlToken(contrastText(tertiary, "#10151d", "#ffffff"))}`,
+    `  tertiary-container: ${yamlToken(mix(tertiary, surface, 0.2))}`,
+    `  on-tertiary-container: ${yamlToken(contrastText(mix(tertiary, surface, 0.2), "#10151d", "#ffffff"))}`,
+    `  error: ${yamlToken(error)}`,
+    `  on-error: ${yamlToken("#690005")}`,
+    `  error-container: ${yamlToken("#93000a")}`,
+    `  on-error-container: ${yamlToken("#ffdad6")}`,
+    `  primary-fixed: ${yamlToken(lighten(accent, 0.55))}`,
+    `  primary-fixed-dim: ${yamlToken(lighten(accent, 0.28))}`,
+    `  on-primary-fixed: ${yamlToken(contrastText(lighten(accent, 0.55), "#10151d", "#ffffff"))}`,
+    `  on-primary-fixed-variant: ${yamlToken(darken(accent, 0.32))}`,
+    `  secondary-fixed: ${yamlToken(lighten(secondary, 0.55))}`,
+    `  secondary-fixed-dim: ${yamlToken(lighten(secondary, 0.28))}`,
+    `  on-secondary-fixed: ${yamlToken(contrastText(lighten(secondary, 0.55), "#10151d", "#ffffff"))}`,
+    `  on-secondary-fixed-variant: ${yamlToken(darken(secondary, 0.32))}`,
+    `  tertiary-fixed: ${yamlToken(lighten(tertiary, 0.55))}`,
+    `  tertiary-fixed-dim: ${yamlToken(lighten(tertiary, 0.28))}`,
+    `  on-tertiary-fixed: ${yamlToken(contrastText(lighten(tertiary, 0.55), "#10151d", "#ffffff"))}`,
+    `  on-tertiary-fixed-variant: ${yamlToken(darken(tertiary, 0.32))}`,
+    `  background: ${yamlToken(base)}`,
+    `  on-background: ${yamlToken(textPrimary)}`,
+    `  surface-variant: ${yamlToken(isDark ? lighten(surface, 0.1) : darken(surface, 0.08))}`,
+    "typography:",
+    "  display:",
+    `    fontFamily: ${yamlString(spec.typography.displayFont)}`,
+    `    fontSize: ${displayType.size}`,
+    `    fontWeight: '${displayType.weight}'`,
+    `    lineHeight: '${displayType.lineHeight}'`,
+    `    letterSpacing: ${displayType.letterSpacing}`,
+    "  headline-lg:",
+    `    fontFamily: ${yamlString(spec.typography.displayFont)}`,
+    `    fontSize: ${sectionType.size}`,
+    `    fontWeight: '${sectionType.weight}'`,
+    `    lineHeight: '${sectionType.lineHeight}'`,
+    `    letterSpacing: ${sectionType.letterSpacing}`,
+    "  headline-md:",
+    `    fontFamily: ${yamlString(spec.typography.displayFont)}`,
+    `    fontSize: ${cardType.size}`,
+    `    fontWeight: '${cardType.weight}'`,
+    `    lineHeight: '${cardType.lineHeight}'`,
+    `    letterSpacing: ${cardType.letterSpacing}`,
+    "  body-lg:",
+    `    fontFamily: ${yamlString(spec.typography.bodyFont)}`,
+    `    fontSize: ${bodyType.size}`,
+    `    fontWeight: '${bodyType.weight}'`,
+    `    lineHeight: '${bodyType.lineHeight}'`,
+    `    letterSpacing: ${bodyType.letterSpacing}`,
+    "  body-sm:",
+    `    fontFamily: ${yamlString(spec.typography.bodyFont)}`,
+    `    fontSize: ${bodyType.size}`,
+    `    fontWeight: '${bodyType.weight}'`,
+    `    lineHeight: '${bodyType.lineHeight}'`,
+    `    letterSpacing: ${bodyType.letterSpacing}`,
+    "  label-caps:",
+    `    fontFamily: ${yamlString(spec.typography.bodyFont)}`,
+    `    fontSize: ${captionType.size}`,
+    `    fontWeight: '${captionType.weight}'`,
+    `    lineHeight: '${captionType.lineHeight}'`,
+    `    letterSpacing: ${captionType.letterSpacing}`,
+    "rounded:",
+    `  sm: ${radius}`,
+    `  DEFAULT: ${radius}`,
+    `  md: ${formRadius}`,
+    `  lg: ${FORM_RADIUS_VALUES["extra-large"]}`,
+    `  xl: ${FORM_RADIUS_VALUES["extra-large"]}`,
+    "  full: 9999px",
+    "spacing:",
+    "  base: 8px",
+    "  xs: 4px",
+    "  sm: 12px",
+    "  md: 24px",
+    "  lg: 48px",
+    "  xl: 80px",
+    "  container-max: 1200px",
+    "  gutter: 24px",
+    "---"
   ].join("\n");
 }
 
@@ -402,8 +633,10 @@ export function createDefaultSpec(title = DEFAULT_SPEC.meta.title): DesignSpec {
 }
 
 export function importDesignMd(markdown: string, metadata?: Partial<DesignSpec["meta"]> & { sourceKind?: DesignSpec["notes"]["sourceKind"] }): ImportResult {
-  const normalized = normalizeMarkdown(markdown);
-  const title = metadata?.title || getTitle(normalized);
+  const normalizedInput = normalizeMarkdown(markdown);
+  const frontmatter = parseFrontmatter(normalizedInput);
+  const normalized = stripYamlFrontmatter(normalizedInput);
+  const title = metadata?.title || frontmatter.name || getTitle(normalized);
   const { mapped, misc } = extractSections(normalized);
   const themeSplit = stripImportedNotes(mapped.theme ?? "");
   const colorSplit = stripImportedNotes(mapped.colors ?? "");
@@ -411,73 +644,111 @@ export function importDesignMd(markdown: string, metadata?: Partial<DesignSpec["
   const componentSplit = stripImportedNotes(mapped.components ?? "");
   const layoutSplit = stripImportedNotes(mapped.layout ?? "");
   const elevationSplit = stripImportedNotes(mapped.elevation ?? "");
+  const shapesSplit = stripImportedNotes(mapped.shapes ?? "");
   const responsiveSplit = stripImportedNotes(mapped.responsive ?? "");
   const dosSplit = stripImportedNotes(mapped.dosDonts ?? "");
   const promptSplit = stripImportedNotes(mapped.agentPrompts ?? "");
 
-  const palette = uniquePalette(parsePalette(colorSplit.core));
-  const accent = choosePaletteValue(
-    palette,
-    ["accent", "brand", "cta", "coral", "terracotta", "primary accent"],
-    DEFAULT_SPEC.colors.accent
+  const palette = uniquePalette([...parsePalette(colorSplit.core), ...paletteFromFrontmatterColors(frontmatter.colors)]);
+  const accent = frontmatterColor(
+    frontmatter.colors,
+    ["primary", "primary-container", "surface-tint"],
+    choosePaletteValue(
+      palette,
+      ["accent", "brand", "cta", "coral", "terracotta", "primary accent"],
+      DEFAULT_SPEC.colors.accent
+    )
   );
-  const base = choosePaletteValue(
-    palette,
-    ["page background", "canvas", "background", "parchment", "void black"],
-    DEFAULT_SPEC.colors.base,
-    (entry) => !/(text|border|ring)/i.test(`${entry.name} ${entry.description}`)
+  const base = frontmatterColor(
+    frontmatter.colors,
+    ["background", "surface", "surface-container-lowest"],
+    choosePaletteValue(
+      palette,
+      ["page background", "canvas", "background", "parchment", "void black"],
+      DEFAULT_SPEC.colors.base,
+      (entry) => !/(text|border|ring)/i.test(`${entry.name} ${entry.description}`)
+    )
   );
-  const surface = choosePaletteValue(
-    palette,
-    ["surface", "card", "container", "elevated", "ivory", "white surface"],
-    DEFAULT_SPEC.colors.surface
+  const surface = frontmatterColor(
+    frontmatter.colors,
+    ["surface-container", "surface", "surface-container-low"],
+    choosePaletteValue(
+      palette,
+      ["surface", "card", "container", "elevated", "ivory", "white surface"],
+      DEFAULT_SPEC.colors.surface
+    )
   );
-  const textPrimary = choosePaletteValue(
-    palette,
-    ["primary text", "heading text", "foreground", "near black", "pure white"],
-    DEFAULT_SPEC.colors.textPrimary,
-    (entry) => /(text|white|black|foreground)/i.test(`${entry.name} ${entry.description}`)
+  const textPrimary = frontmatterColor(
+    frontmatter.colors,
+    ["on-surface", "on-background"],
+    choosePaletteValue(
+      palette,
+      ["primary text", "heading text", "foreground", "near black", "pure white"],
+      DEFAULT_SPEC.colors.textPrimary,
+      (entry) => /(text|white|black|foreground)/i.test(`${entry.name} ${entry.description}`)
+    )
   );
-  const textSecondary = choosePaletteValue(
-    palette,
-    ["secondary text", "body text", "muted", "tertiary text", "olive gray"],
-    DEFAULT_SPEC.colors.textSecondary,
-    (entry) => /(text|gray|muted|silver|secondary)/i.test(`${entry.name} ${entry.description}`)
+  const textSecondary = frontmatterColor(
+    frontmatter.colors,
+    ["on-surface-variant"],
+    choosePaletteValue(
+      palette,
+      ["secondary text", "body text", "muted", "tertiary text", "olive gray"],
+      DEFAULT_SPEC.colors.textSecondary,
+      (entry) => /(text|gray|muted|silver|secondary)/i.test(`${entry.name} ${entry.description}`)
+    )
   );
-  const border = choosePaletteValue(
-    palette,
-    ["border", "divider", "ring", "outline"],
-    DEFAULT_SPEC.colors.border,
-    (entry) => /(border|ring|divider)/i.test(`${entry.name} ${entry.description}`)
+  const border = frontmatterColor(
+    frontmatter.colors,
+    ["outline", "outline-variant"],
+    choosePaletteValue(
+      palette,
+      ["border", "divider", "ring", "outline"],
+      DEFAULT_SPEC.colors.border,
+      (entry) => /(border|ring|divider)/i.test(`${entry.name} ${entry.description}`)
+    )
   );
 
-  const displayFont = findFont(typographySplit.core, "Display") || findFont(typographySplit.core, "Headline") || DEFAULT_SPEC.typography.displayFont;
-  const bodyFont = findFont(typographySplit.core, "Body / UI") || findFont(typographySplit.core, "Body/UI") || findFont(typographySplit.core, "Body") || DEFAULT_SPEC.typography.bodyFont;
+  const displayFont =
+    frontmatterFont(frontmatter.typography, ["display", "headline-lg", "headline-md"]) ||
+    findFont(typographySplit.core, "Display") ||
+    findFont(typographySplit.core, "Headline") ||
+    DEFAULT_SPEC.typography.displayFont;
+  const bodyFont =
+    frontmatterFont(frontmatter.typography, ["body-lg", "body-sm"]) ||
+    findFont(typographySplit.core, "Body / UI") ||
+    findFont(typographySplit.core, "Body/UI") ||
+    findFont(typographySplit.core, "Body") ||
+    DEFAULT_SPEC.typography.bodyFont;
   const monoFont = findFont(typographySplit.core, "Monospace") || findFont(typographySplit.core, "Code") || DEFAULT_SPEC.typography.monoFont;
 
   const themeMode = detectThemeMode(themeSplit.core, base);
-  const radiusSection = `${layoutSplit.core}\n${componentSplit.core}`;
+  const radiusSection = `${shapesSplit.core}\n${layoutSplit.core}\n${componentSplit.core}`;
   const structuredRadiusPair = detectStructuredRadiusPair(radiusSection);
+  const frontmatterRadius = radiusFromToken(frontmatter.rounded.DEFAULT ?? frontmatter.rounded.md ?? frontmatter.rounded.sm);
+  const frontmatterFormRadius = radiusFromToken(frontmatter.rounded.md ?? frontmatter.rounded.DEFAULT ?? frontmatter.rounded.sm);
   const radius =
     structuredRadiusPair?.radius ??
+    frontmatterRadius ??
     detectRadiusFromKeywords(radiusSection, ["core radius", "general components", "overall ui", "menus and modals"]) ??
     detectRadius(radiusSection, DEFAULT_SPEC.shape.radius);
   const inputSection = componentSplit.core.match(/###\s+Inputs[\s\S]*?(?=###|$)/i)?.[0] ?? componentSplit.core;
   const formRadius =
     structuredRadiusPair?.formRadius ??
+    frontmatterFormRadius ??
     detectRadiusFromKeywords(inputSection, ["form radius", "form controls", "form elements", "inputs", "selects"]) ??
     detectRadius(inputSection, radius);
   const density = detectDensity(layoutSplit.core);
   const elevation = detectElevation(elevationSplit.core);
 
   const warnings: string[] = [];
-  for (const section of SECTION_TITLES) {
+  for (const section of SECTION_TITLES.filter((item) => ["theme", "colors", "typography", "components", "layout", "elevation", "shapes"].includes(item.id))) {
     if (!mapped[section.id]) {
       warnings.push(`Missing section: ${section.title}`);
     }
   }
   if (!palette.length) warnings.push("No structured color tokens were detected. The studio is using safe defaults.");
-  if (!findFont(typographySplit.core, "Headline") && !findFont(typographySplit.core, "Display")) {
+  if (!frontmatterFont(frontmatter.typography, ["display", "headline-lg", "headline-md"]) && !findFont(typographySplit.core, "Headline") && !findFont(typographySplit.core, "Display")) {
     warnings.push("Display font was not detected. A studio default font bundle is active.");
   }
 
@@ -538,6 +809,7 @@ export function importDesignMd(markdown: string, metadata?: Partial<DesignSpec["
         components: componentSplit.imported || componentSplit.core,
         layout: layoutSplit.imported || layoutSplit.core,
         elevation: elevationSplit.imported || elevationSplit.core,
+        shapes: shapesSplit.imported || shapesSplit.core,
         responsive: responsiveSplit.imported || responsiveSplit.core,
         dosDonts: dosSplit.imported || dosSplit.core,
         agentPrompts: promptSplit.imported || promptSplit.core
@@ -550,85 +822,109 @@ export function importDesignMd(markdown: string, metadata?: Partial<DesignSpec["
   return { spec, warnings };
 }
 
-export function serializeDesignMd(spec: DesignSpec) {
-  const paletteRows = [
-    "| Token | Value | Role |",
-    "|-------|-------|------|",
-    `| Accent | \`${spec.colors.accent}\` | Primary interaction, CTA, selection highlights |`,
-    `| Base / Page | \`${spec.colors.base}\` | Overall canvas and shell background |`,
-    `| Surface | \`${spec.colors.surface}\` | Cards, panes, form surfaces |`,
-    `| Text Primary | \`${spec.colors.textPrimary}\` | Headlines and high-emphasis copy |`,
-    `| Text Secondary | \`${spec.colors.textSecondary}\` | Supporting copy, helper text, metadata |`,
-    `| Border | \`${spec.colors.border}\` | Divider, outlines, containment |`
-  ].join("\n");
+function stitchSection(imported: string | undefined, generated: string) {
+  return imported?.trim() || generated.trim();
+}
 
-  const paletteReferences = spec.colors.palette.length
-    ? `\n### Imported Palette References\n\n${spec.colors.palette
-        .map((entry) => `- **${entry.name}** (\`${entry.value}\`): ${entry.description}`)
-        .join("\n")}\n`
+function generatedStitchColors(spec: DesignSpec) {
+  const references = spec.colors.palette.length
+    ? `\n\nToken references: ${spec.colors.palette
+        .slice(0, 8)
+        .map((entry) => `${entry.name} ${entry.value}`)
+        .join(", ")}.`
     : "";
 
+  return [
+    `The palette is anchored by \`${spec.colors.base}\` as the page background and \`${spec.colors.surface}\` as the main component surface.`,
+    "",
+    `- **Primary & Secondary:** \`${spec.colors.accent}\` drives primary actions, selected states, and the strongest brand moments.`,
+    `- **Neutrals:** \`${spec.colors.textPrimary}\` is used for high-emphasis copy, while \`${spec.colors.textSecondary}\` supports body text, helper text, and metadata.`,
+    `- **Surface Logic:** \`${spec.colors.border}\` defines dividers and containment so cards, inputs, and panels remain readable across generated drafts.${references}`
+  ].join("\n");
+}
+
+function generatedStitchTypography(spec: DesignSpec) {
+  return [
+    `This system uses **${spec.typography.displayFont}** for display and headline moments, with **${spec.typography.bodyFont}** for interface copy.`,
+    "",
+    `The hierarchy follows a ${SCALE_PRESET_LABELS[spec.typography.scalePreset].toLowerCase()} scale. Large headings should carry the main product promise, while body copy stays compact enough for product screens and generated drafts. Labels use uppercase styling sparingly for metadata, tabs, and small control groups.`
+  ].join("\n");
+}
+
+function generatedStitchLayout(spec: DesignSpec) {
+  return [
+    `The layout uses a ${spec.layout.density} density preset: ${DENSITY_COPY[spec.layout.density]}`,
+    "",
+    "Spacing should stay on an 8px-based rhythm. Major sections receive larger vertical gaps, while component groups use smaller repeated spacing so the same style can be compared across landing pages, dashboards, and tool surfaces."
+  ].join("\n");
+}
+
+function generatedStitchElevation(spec: DesignSpec) {
+  return [
+    `Depth follows the **${spec.elevation.preset}** preset: ${ELEVATION_COPY[spec.elevation.preset]}`,
+    "",
+    "Use elevation to clarify hierarchy, not to decorate every element. Primary panels, popovers, and selected cards can receive stronger separation; routine list rows and control groups should stay quieter."
+  ].join("\n");
+}
+
+function generatedStitchShapes(spec: DesignSpec) {
+  return [
+    `The shape language uses \`${RADIUS_VALUES[spec.shape.radius]}\` for core components and \`${FORM_RADIUS_VALUES[spec.shape.formRadius]}\` for form controls.`,
+    "",
+    "Full-radius pills are reserved for compact buttons, chips, badges, and circular icon controls. Large containers should keep the same radius family so generated screens feel like one coherent system."
+  ].join("\n");
+}
+
+function generatedStitchComponents(spec: DesignSpec) {
+  return [
+    "### Buttons",
+    `Primary buttons use \`${spec.colors.accent}\` with high-contrast text. Secondary buttons stay neutral, using surface fills and border definition rather than a competing color.`,
+    "",
+    "### Cards",
+    `Cards use \`${spec.colors.surface}\` over the page background with \`${spec.colors.border}\` for containment and the ${spec.elevation.preset} elevation preset for hierarchy.`,
+    "",
+    "### Input Fields",
+    `Inputs use \`${FORM_RADIUS_VALUES[spec.shape.formRadius]}\` radius, neutral fills, and accent-colored focus states. Field chrome should stay quiet until interaction.`,
+    "",
+    "### Chips & Badges",
+    "Chips and badges are compact, pill-shaped elements used for status, filters, and metadata. They should feel secondary to primary actions.",
+    "",
+    "### Lists",
+    "List rows use subtle dividers and restrained hover states. Dense screens should preserve scanability through alignment, spacing, and consistent row height."
+  ].join("\n");
+}
+
+export function serializeDesignMd(spec: DesignSpec) {
   const sections = [
-    `# Design System: ${spec.meta.title}`,
+    generatedFrontmatter(spec),
     "",
-    "## 1. Visual Theme & Atmosphere",
+    "## Brand & Style",
     "",
-    generatedThemeParagraph(spec),
-    importedNoteBlock(spec.notes.importedSections.theme),
+    stitchSection(spec.notes.importedSections.theme, generatedThemeParagraph(spec)),
     "",
-    "## 2. Color Palette & Roles",
+    "## Colors",
     "",
-    paletteRows,
-    paletteReferences,
-    importedNoteBlock(spec.notes.importedSections.colors),
+    stitchSection(spec.notes.importedSections.colors, generatedStitchColors(spec)),
     "",
-    "## 3. Typography Rules",
+    "## Typography",
     "",
-    "### Font Family",
+    stitchSection(spec.notes.importedSections.typography, generatedStitchTypography(spec)),
     "",
-    `- **Display**: \`${spec.typography.displayFont}\``,
-    `- **Body / UI**: \`${spec.typography.bodyFont}\``,
-    `- **Monospace**: \`${spec.typography.monoFont}\``,
+    "## Layout & Spacing",
     "",
-    `### Hierarchy (${SCALE_PRESET_LABELS[spec.typography.scalePreset]})`,
+    stitchSection(spec.notes.importedSections.layout, generatedStitchLayout(spec)),
     "",
-    buildTypographyTable(spec),
-    importedNoteBlock(spec.notes.importedSections.typography),
+    "## Elevation & Depth",
     "",
-    "## 4. Component Stylings",
+    stitchSection(spec.notes.importedSections.elevation, generatedStitchElevation(spec)),
     "",
-    generatedComponentCopy(spec),
-    importedNoteBlock(spec.notes.importedSections.components),
+    "## Shapes",
     "",
-    "## 5. Layout Principles",
+    stitchSection(spec.notes.importedSections.shapes, generatedStitchShapes(spec)),
     "",
-    `- **Density preset**: ${spec.layout.density}`,
-    `- **Rhythm**: ${DENSITY_COPY[spec.layout.density]}`,
-    `- **Core radius**: \`${RADIUS_VALUES[spec.shape.radius]}\``,
-    `- **Form radius**: \`${FORM_RADIUS_VALUES[spec.shape.formRadius]}\``,
-    importedNoteBlock(spec.notes.importedSections.layout),
+    "## Components",
     "",
-    "## 6. Depth & Elevation",
-    "",
-    `| Preset | Description |`,
-    `|--------|-------------|`,
-    `| ${spec.elevation.preset} | ${ELEVATION_COPY[spec.elevation.preset]} |`,
-    importedNoteBlock(spec.notes.importedSections.elevation),
-    "",
-    "## 7. Do's and Don'ts",
-    "",
-    generatedDoDont(spec),
-    importedNoteBlock(spec.notes.importedSections.dosDonts),
-    "",
-    "## 8. Responsive Behavior",
-    "",
-    generatedResponsive(spec),
-    importedNoteBlock(spec.notes.importedSections.responsive),
-    "",
-    "## 9. Agent Prompt Guide",
-    "",
-    generatedPromptGuide(spec),
-    importedNoteBlock(spec.notes.importedSections.agentPrompts)
+    stitchSection(spec.notes.importedSections.components, generatedStitchComponents(spec))
   ];
 
   if (spec.notes.misc.length) {

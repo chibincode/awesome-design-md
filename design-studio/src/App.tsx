@@ -1,90 +1,83 @@
-import { useEffect, useState } from "react";
-import { AdvancedSettingsModal } from "./components/AdvancedSettingsModal";
+import { useState } from "react";
+import { AIBriefPanel } from "./components/AIBriefPanel";
 import { CanvasPreview } from "./components/CanvasPreview";
 import { MarkdownPanel } from "./components/MarkdownPanel";
-import { SampleBrowser } from "./components/SampleBrowser";
+import { StyleLabPanel } from "./components/StyleLabPanel";
 import { TokenDock } from "./components/TokenDock";
 import { TopBar } from "./components/TopBar";
-import { saveDesignFile, openDesignFile, supportsFileSystemAccess, type FileSession } from "./lib/fileSystem";
-import { FONT_BUNDLES, THEME_PRESET_BASES } from "./lib/presets";
+import { saveDesignFile, supportsFileSystemAccess, type FileSession } from "./lib/fileSystem";
+import { THEME_PRESET_BASES } from "./lib/presets";
 import { createDefaultSpec, importDesignMd, serializeDesignMd } from "./lib/designMd";
-import { SAMPLE_PACKS } from "./lib/samplePacks";
+import { CODEX_TEST_DRAFT_JSON, parseCodexDraftJson } from "./lib/codexDraft";
+import { DEFAULT_BRIEF, generateScreen } from "./lib/localGenerator";
 import type {
   DensityPreset,
+  DesignBrief,
+  DesignFlowStep,
   DesignSpec,
   ElevationPreset,
+  GeneratedDraft,
+  GeneratedScreen,
   PreviewMode,
   PreviewSceneId,
   RadiusPreset,
-  SampleDesignPack,
   ScalePreset,
-  ThemeMode,
-  ThemePreset,
-  ViewMode
+  ThemePreset
 } from "./types/design";
 
-type FontField = "displayFont" | "bodyFont" | "monoFont" | "scalePreset";
-
 export default function App() {
-  const [spec, setSpec] = useState<DesignSpec>(() => createDefaultSpec("Design Studio"));
+  const [spec, setSpec] = useState<DesignSpec>(() => createDefaultSpec("Design.md Standard"));
+  const [brief, setBrief] = useState<DesignBrief>(DEFAULT_BRIEF);
+  const [generatedScreen, setGeneratedScreen] = useState<GeneratedScreen>(() =>
+    generateScreen(DEFAULT_BRIEF, createDefaultSpec("Design.md Standard"))
+  );
+  const [generatedDrafts, setGeneratedDrafts] = useState<GeneratedDraft[]>([]);
+  const [hasGeneratedDrafts, setHasGeneratedDrafts] = useState(false);
+  const [codexDraftJson, setCodexDraftJson] = useState(CODEX_TEST_DRAFT_JSON);
   const [warnings, setWarnings] = useState<string[]>([]);
-  const [sampleBrowserOpen, setSampleBrowserOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [flowStep, setFlowStep] = useState<DesignFlowStep>("style");
+  const [styleScene, setStyleScene] = useState<PreviewSceneId>("landing");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("light");
-  const [scene, setScene] = useState<PreviewSceneId>("components");
-  const [viewMode, setViewMode] = useState<ViewMode>("split");
-  const [themePreset, setThemePreset] = useState<ThemePreset>("default");
+  const themePreset: ThemePreset = "default";
   const [baseTone, setBaseTone] = useState<number>(THEME_PRESET_BASES.default);
   const [session, setSession] = useState<FileSession>({ handle: null, name: "DESIGN.md" });
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("Ready");
 
-  useEffect(() => {
-    const bootstrap = async () => {
-      const starter = SAMPLE_PACKS.find((pack) => pack.slug === "framer") ?? SAMPLE_PACKS[0];
-      if (!starter) return;
-      await handleSampleImport(starter, false);
-    };
-    void bootstrap();
-  }, []);
-
   const markdown = serializeDesignMd(spec);
+  const activeScene: PreviewSceneId = flowStep === "style" ? styleScene : "generated";
 
-  async function handleSampleImport(pack: SampleDesignPack, markDirty = true) {
-    const markdownText = await pack.load();
-    const imported = importDesignMd(markdownText, {
-      sourceKind: "sample",
-      sourceName: pack.name,
-      sourcePath: pack.fileName,
-      title: pack.name
-    });
-    setSpec(imported.spec);
-    setWarnings(imported.warnings);
-    setSession({ handle: null, name: `${pack.slug}.DESIGN.md`, pathHint: pack.fileName });
-    setDirty(markDirty);
-    setSampleBrowserOpen(false);
-    setStatus(`Imported ${pack.name}`);
+  function createDraft(screen: GeneratedScreen, draftIndex: number): GeneratedDraft {
+    return {
+      id: `draft-${Date.now()}-${draftIndex}`,
+      label: `Draft ${draftIndex + 1}`,
+      screen,
+      spec,
+      baseTone
+    };
   }
 
-  async function handleOpenFile() {
+  function applyImportedDesign(content: string, nextSession: FileSession) {
+    const imported = importDesignMd(content, {
+      sourceKind: "file",
+      sourceName: nextSession.name,
+      sourcePath: nextSession.pathHint
+    });
+    setSpec(imported.spec);
+    setPreviewMode(imported.spec.theme.themeMode === "dark" ? "dark" : "light");
+    setGeneratedScreen(generateScreen(brief, imported.spec));
+    setWarnings(imported.warnings);
+    setSession(nextSession);
+    setDirty(false);
+    setStatus(`Imported ${nextSession.name}`);
+  }
+
+  async function handleImportFile(file: File) {
     try {
-      const result = await openDesignFile();
-      if (!result) {
-        setStatus("Direct file open is only available in Chromium-based browsers.");
-        return;
-      }
-      const imported = importDesignMd(result.content, {
-        sourceKind: "file",
-        sourceName: result.session.name,
-        sourcePath: result.session.pathHint
-      });
-      setSpec(imported.spec);
-      setWarnings(imported.warnings);
-      setSession(result.session);
-      setDirty(false);
-      setStatus(`Opened ${result.session.name}`);
+      const content = await file.text();
+      applyImportedDesign(content, { handle: null, name: file.name, pathHint: file.name });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not open the selected file.");
+      setStatus(error instanceof Error ? error.message : "Could not import this DESIGN.md.");
     }
   }
 
@@ -101,170 +94,187 @@ export default function App() {
 
   function updateSpec(next: DesignSpec) {
     setSpec(next);
+    setGeneratedScreen(generateScreen(brief, next));
     setDirty(true);
+  }
+
+  function handleBriefChange(next: DesignBrief) {
+    setBrief(next);
+    setGeneratedScreen(generateScreen(next, spec));
+  }
+
+  function handleEnterGenerate() {
+    const nextScreen = generateScreen(brief, spec);
+    setGeneratedScreen(nextScreen);
+    if (flowStep !== "generate") {
+      setGeneratedDrafts([]);
+      setHasGeneratedDrafts(false);
+    }
+    setFlowStep("generate");
+    setStatus("Ready. Generate a draft when the brief feels right.");
+  }
+
+  function handleBackToStyle() {
+    setFlowStep("style");
+    setStatus(`Tuning ${spec.meta.title}`);
+  }
+
+  function handleGenerateScreen() {
+    const nextScreen = generateScreen(brief, spec);
+    setGeneratedScreen(nextScreen);
+    setHasGeneratedDrafts(true);
+    setGeneratedDrafts((current) => {
+      const baseDrafts = hasGeneratedDrafts ? current : [];
+      return [...baseDrafts, createDraft(nextScreen, baseDrafts.length)];
+    });
+    setFlowStep("generate");
+    setStatus(`Added draft ${(hasGeneratedDrafts ? generatedDrafts.length : 0) + 1} to the canvas`);
+  }
+
+  function handleImportCodexDraft() {
+    try {
+      const nextScreen = parseCodexDraftJson(codexDraftJson);
+      setGeneratedScreen(nextScreen);
+      setHasGeneratedDrafts(true);
+      setGeneratedDrafts((current) => {
+        const baseDrafts = hasGeneratedDrafts ? current : [];
+        return [...baseDrafts, createDraft(nextScreen, baseDrafts.length)];
+      });
+      setFlowStep("generate");
+      setStatus(`Imported AI draft ${(hasGeneratedDrafts ? generatedDrafts.length : 0) + 1} to the canvas`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import this AI draft JSON.");
+    }
   }
 
   return (
     <div className="app-shell">
       {!supportsFileSystemAccess() ? (
         <div className="runtime-banner">
-          Open this tool in Chromium if you want direct file open/save. The rest of the studio still works.
+          Import works in this browser. Direct overwrite save needs Chromium file access.
         </div>
       ) : null}
 
       <TopBar
-        currentName={session.name || spec.meta.title}
-        dirty={dirty}
+        flowStep={flowStep}
         previewMode={previewMode}
-        viewMode={viewMode}
-        warningCount={warnings.length}
-        onOpenAdvanced={() => setAdvancedOpen(true)}
-        onOpenFile={handleOpenFile}
-        onImportSample={() => setSampleBrowserOpen(true)}
-        onSave={handleSave}
-        onViewModeChange={setViewMode}
+        onFlowStepChange={(step) => {
+          if (step === "generate") {
+            handleEnterGenerate();
+            return;
+          }
+          handleBackToStyle();
+        }}
         onPreviewModeChange={setPreviewMode}
       />
 
-      <div className={`workspace workspace--${viewMode}`}>
-        {viewMode !== "design" ? (
-          <CanvasPreview
-            spec={spec}
-            previewMode={previewMode}
-            scene={scene}
-            themePreset={themePreset}
-            baseTone={baseTone}
-            onSceneChange={setScene}
-          />
-        ) : null}
-        {viewMode !== "canvas" ? <MarkdownPanel spec={spec} markdown={markdown} warnings={warnings} /> : null}
+      <div className="workspace workspace--split">
+        <CanvasPreview
+          spec={spec}
+          generatedDrafts={hasGeneratedDrafts ? generatedDrafts : []}
+          flowStep={flowStep}
+          activeScene={activeScene}
+          previewMode={previewMode}
+          themePreset={themePreset}
+          baseTone={baseTone}
+          onSceneChange={setStyleScene}
+          onBackToStyle={handleBackToStyle}
+        />
+        <div className="side-rail">
+          {flowStep === "style" ? (
+            <StyleLabPanel
+              spec={spec}
+              status={status}
+              onImportFile={(file) => {
+                void handleImportFile(file);
+              }}
+              onEnterGenerate={handleEnterGenerate}
+            />
+          ) : (
+            <AIBriefPanel
+              brief={brief}
+              generatedScreen={generatedScreen}
+              status={status}
+              codexDraftJson={codexDraftJson}
+              onBriefChange={handleBriefChange}
+              onGenerate={handleGenerateScreen}
+              onCodexDraftJsonChange={setCodexDraftJson}
+              onImportCodexDraft={handleImportCodexDraft}
+              onBackToStyle={handleBackToStyle}
+            />
+          )}
+          <MarkdownPanel spec={spec} markdown={markdown} warnings={warnings} dirty={dirty} onSave={handleSave} />
+        </div>
       </div>
 
-      <footer className="dock-shell">
-        <span className="sr-only" aria-live="polite">
-          {status}
-        </span>
-        <TokenDock
-          spec={spec}
-          onColorChange={(key, value) =>
-            updateSpec({
-              ...spec,
-              colors: {
-                ...spec.colors,
-                [key]: value
-              }
-            })
-          }
-          baseTone={baseTone}
-          onBaseToneChange={setBaseTone}
-          onFontFamilyChange={(value) => {
-            updateSpec({
-              ...spec,
-              typography: {
-                ...spec.typography,
-                displayFont: value,
-                bodyFont: value
-              }
-            });
-          }}
-          onShapeChange={(key, value) =>
-            updateSpec({
-              ...spec,
-              shape: {
-                ...spec.shape,
-                [key]: value as RadiusPreset
-              }
-            })
-          }
-          themePreset={themePreset}
-          onThemePresetChange={(value) => {
-            setThemePreset(value);
-            setBaseTone(THEME_PRESET_BASES[value]);
-          }}
-        />
-      </footer>
+      {flowStep === "style" ? (
+        <footer className="dock-shell">
+          <span className="sr-only" aria-live="polite">
+            {status}
+          </span>
+          <TokenDock
+            spec={spec}
+            onColorChange={(key, value) =>
+              updateSpec({
+                ...spec,
+                colors: {
+                  ...spec.colors,
+                  [key]: value
+                }
+              })
+            }
+            baseTone={baseTone}
+            onBaseToneChange={setBaseTone}
+            onFontFamilyChange={(value) => {
+              updateSpec({
+                ...spec,
+                typography: {
+                  ...spec.typography,
+                  displayFont: value,
+                  bodyFont: value
+                }
+              });
+            }}
+            onScaleChange={(value: ScalePreset) =>
+              updateSpec({
+                ...spec,
+                typography: {
+                  ...spec.typography,
+                  scalePreset: value
+                }
+              })
+            }
+            onShapeChange={(key, value) =>
+              updateSpec({
+                ...spec,
+                shape: {
+                  ...spec.shape,
+                  [key]: value as RadiusPreset
+                }
+              })
+            }
+            onDensityChange={(value: DensityPreset) =>
+              updateSpec({
+                ...spec,
+                layout: {
+                  ...spec.layout,
+                  density: value
+                }
+              })
+            }
+            onElevationChange={(value: ElevationPreset) =>
+              updateSpec({
+                ...spec,
+                elevation: {
+                  ...spec.elevation,
+                  preset: value
+                }
+              })
+            }
+          />
+        </footer>
+      ) : null}
 
-      <SampleBrowser
-        open={sampleBrowserOpen}
-        packs={SAMPLE_PACKS}
-        onClose={() => setSampleBrowserOpen(false)}
-        onSelect={(pack) => {
-          void handleSampleImport(pack);
-        }}
-      />
-
-      <AdvancedSettingsModal
-        open={advancedOpen}
-        spec={spec}
-        onClose={() => setAdvancedOpen(false)}
-        onColorChange={(key, value) =>
-          updateSpec({
-            ...spec,
-            colors: {
-              ...spec.colors,
-              [key]: value
-            }
-          })
-        }
-        onFontChange={(key: FontField, value) =>
-          updateSpec({
-            ...spec,
-            typography: {
-              ...spec.typography,
-              [key]: key === "scalePreset" ? (value as ScalePreset) : value
-            }
-          })
-        }
-        onApplyFontBundle={(bundleId) => {
-          const bundle = FONT_BUNDLES.find((item) => item.id === bundleId);
-          if (!bundle) return;
-          updateSpec({
-            ...spec,
-            typography: {
-              ...spec.typography,
-              displayFont: bundle.displayFont,
-              bodyFont: bundle.bodyFont,
-              monoFont: bundle.monoFont
-            }
-          });
-        }}
-        onDensityChange={(value: DensityPreset) =>
-          updateSpec({
-            ...spec,
-            layout: {
-              ...spec.layout,
-              density: value
-            }
-          })
-        }
-        onElevationChange={(value: ElevationPreset) =>
-          updateSpec({
-            ...spec,
-            elevation: {
-              ...spec.elevation,
-              preset: value
-            }
-          })
-        }
-        onThemeModeChange={(value: ThemeMode) =>
-          updateSpec({
-            ...spec,
-            theme: {
-              ...spec.theme,
-              themeMode: value
-            }
-          })
-        }
-        onShapeChange={(key, value) =>
-          updateSpec({
-            ...spec,
-            shape: {
-              ...spec.shape,
-              [key]: value as RadiusPreset
-            }
-          })
-        }
-      />
     </div>
   );
 }

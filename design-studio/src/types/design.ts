@@ -11,8 +11,10 @@ export type RadiusPreset =
   | "extra-large";
 export type ViewMode = "canvas" | "split" | "design";
 export type PreviewMode = "light" | "dark";
-export type PreviewSceneId = "components" | "dashboard" | "landing";
+export type PreviewSceneId = "generated" | "components" | "dashboard" | "landing";
+export type DesignFlowStep = "style" | "generate";
 export type SourceKind = "sample" | "file" | "manual";
+export type BriefPageType = "landing" | "dashboard" | "tool";
 export type ThemePreset =
   | "default"
   | "sky"
@@ -33,6 +35,7 @@ export type SectionId =
   | "components"
   | "layout"
   | "elevation"
+  | "shapes"
   | "responsive"
   | "dosDonts"
   | "agentPrompts";
@@ -103,13 +106,6 @@ export interface ImportResult {
   warnings: string[];
 }
 
-export interface SampleDesignPack {
-  slug: string;
-  name: string;
-  fileName: string;
-  load: () => Promise<string>;
-}
-
 export interface FontOption {
   label: string;
   value: string;
@@ -122,4 +118,83 @@ export interface FontBundle {
   displayFont: string;
   bodyFont: string;
   monoFont: string;
+}
+
+export interface DesignBrief {
+  pageType: BriefPageType;
+  audience: string;
+  goal: string;
+  keyContent: string;
+  referenceStyle: string;
+}
+
+export interface GeneratedComponent {
+  label: string;
+  body: string;
+  kind: "primary" | "secondary" | "metric" | "action" | "note";
+}
+
+export interface GeneratedSection {
+  id: string;
+  title: string;
+  kicker: string;
+  body: string;
+  components: GeneratedComponent[];
+}
+
+export interface GeneratedScreen {
+  title: string;
+  subtitle: string;
+  pageType: BriefPageType;
+  audience: string;
+  layoutIntent: string;
+  primaryAction: string;
+  secondaryAction: string;
+  sections: GeneratedSection[];
+}
+
+export interface GeneratedDraft {
+  id: string;
+  label: string;
+  screen: GeneratedScreen;
+  spec: DesignSpec;
+  baseTone: number;
+}
+
+export interface VisualCanvasAsset {
+  id: string;
+  type: "image";
+  name: string;
+  url: string;
+  mimeType: string;
+  label: string;
+}
+
+export interface VisualReferenceMention {
+  id: string;
+  assetId: string;
+  label: string;
+}
+
+export interface VisualReferenceAnalysis {
+  id: string;
+  sourceAssetIds: string[];
+  summary: string;
+  palette: Array<{
+    role: string;
+    value: string;
+    note: string;
+  }>;
+  typography: string;
+  surfaces: string;
+  layoutRhythm: string;
+  componentLanguage: string;
+  designMdPatch: {
+    visualTheme: string;
+    atmosphere: string;
+    density: DensityPreset;
+    elevation: ElevationPreset;
+    radius: RadiusPreset;
+    notes: string[];
+  };
 }
